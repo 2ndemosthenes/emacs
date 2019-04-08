@@ -1742,12 +1742,21 @@ print_vectorlike (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag,
   return true;
 }
 
+static void print_object1 (Lisp_Object, Lisp_Object, bool, char*);
+
 static void
 print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 {
   char buf[max (sizeof "from..to..in " + 2 * INT_STRLEN_BOUND (EMACS_INT),
 		max (sizeof " . #" + INT_STRLEN_BOUND (printmax_t),
-		     40))];
+		     max (FLOAT_TO_STRING_BUFSIZE, 40)))];
+  print_object1 (obj, printcharfun, escapeflag, buf);
+}
+
+static void
+print_object1 (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag,
+               char* buf)
+{
   current_thread->stack_top = buf;
   maybe_quit ();
 
@@ -1808,9 +1817,8 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 
     case Lisp_Float:
       {
-	char pigbuf[FLOAT_TO_STRING_BUFSIZE];
-	int len = float_to_string (pigbuf, XFLOAT_DATA (obj));
-	strout (pigbuf, len, len, printcharfun);
+	int len = float_to_string (buf, XFLOAT_DATA (obj));
+	strout (buf, len, len, printcharfun);
       }
       break;
 
@@ -1854,18 +1862,16 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 		     (when requested) a non-ASCII character in a unibyte buffer,
 		     print single-byte non-ASCII string chars
 		     using octal escapes.  */
-		  char outbuf[5];
-		  int len = sprintf (outbuf, "\\%03o", c + 0u);
-		  strout (outbuf, len, len, printcharfun);
+		  int len = sprintf (buf, "\\%03o", c + 0u);
+		  strout (buf, len, len, printcharfun);
 		  need_nonhex = false;
 		}
 	      else if (multibyte
 		       && ! ASCII_CHAR_P (c) && print_escape_multibyte)
 		{
 		  /* When requested, print multibyte chars using hex escapes.  */
-		  char outbuf[sizeof "\\x" + INT_STRLEN_BOUND (c)];
-		  int len = sprintf (outbuf, "\\x%04x", c + 0u);
-		  strout (outbuf, len, len, printcharfun);
+		  int len = sprintf (buf, "\\x%04x", c + 0u);
+		  strout (buf, len, len, printcharfun);
 		  need_nonhex = true;
 		}
 	      else
@@ -1893,9 +1899,8 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
                     }
                   else if (print_escape_control_characters && c_iscntrl (c))
                     {
-                      char outbuf[1 + 3 + 1];
-                      int len = sprintf (outbuf, "\\%03o", c + 0u);
-                      strout (outbuf, len, len, printcharfun);
+                      int len = sprintf (buf, "\\%03o", c + 0u);
+                      strout (buf, len, len, printcharfun);
                     }
                   else
                     printchar (c, printcharfun);
@@ -1991,20 +1996,20 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 	       && EQ (XCAR (obj), Qquote))
 	{
 	  printchar ('\'', printcharfun);
-	  print_object (XCAR (XCDR (obj)), printcharfun, escapeflag);
+	  print_object1 (XCAR (XCDR (obj)), printcharfun, escapeflag, buf);
 	}
       else if (print_quoted && CONSP (XCDR (obj)) && NILP (XCDR (XCDR (obj)))
 	       && EQ (XCAR (obj), Qfunction))
 	{
 	  print_c_string ("#'", printcharfun);
-	  print_object (XCAR (XCDR (obj)), printcharfun, escapeflag);
+	  print_object1 (XCAR (XCDR (obj)), printcharfun, escapeflag, buf);
 	}
       else if (print_quoted && CONSP (XCDR (obj)) && NILP (XCDR (XCDR (obj)))
 	       && EQ (XCAR (obj), Qbackquote))
 	{
 	  printchar ('`', printcharfun);
 	  new_backquote_output++;
-	  print_object (XCAR (XCDR (obj)), printcharfun, escapeflag);
+	  print_object1 (XCAR (XCDR (obj)), printcharfun, escapeflag, buf);
 	  new_backquote_output--;
 	}
       else if (print_quoted && CONSP (XCDR (obj)) && NILP (XCDR (XCDR (obj)))
@@ -2013,9 +2018,9 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 		   || EQ (XCAR (obj), Qcomma_at)
 		   || EQ (XCAR (obj), Qcomma_dot)))
 	{
-	  print_object (XCAR (obj), printcharfun, false);
+	  print_object1 (XCAR (obj), printcharfun, false, buf);
 	  new_backquote_output--;
-	  print_object (XCAR (XCDR (obj)), printcharfun, escapeflag);
+	  print_object1 (XCAR (XCDR (obj)), printcharfun, escapeflag, buf);
 	  new_backquote_output++;
 	}
       else
@@ -2053,7 +2058,7 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 		      if (INTEGERP (num))
 			{
 			  print_c_string (" . ", printcharfun);
-			  print_object (obj, printcharfun, escapeflag);
+			  print_object1 (obj, printcharfun, escapeflag, buf);
 			  goto end_of_list;
 			}
 		    }
@@ -2069,7 +2074,7 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 		}
 
 	      i++;
-	      print_object (XCAR (obj), printcharfun, escapeflag);
+	      print_object1 (XCAR (obj), printcharfun, escapeflag, buf);
 
 	      obj = XCDR (obj);
 	      if (!(i & 1))
@@ -2080,7 +2085,7 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 	  if (!NILP (obj))
 	    {
 	      print_c_string (" . ", printcharfun);
-	      print_object (obj, printcharfun, escapeflag);
+	      print_object1 (obj, printcharfun, escapeflag, buf);
 	    }
 
 	end_of_list:
