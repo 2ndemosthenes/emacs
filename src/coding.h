@@ -691,6 +691,7 @@ surrogates_to_codepoint (int low, int high)
 /* Extern declarations.  */
 extern Lisp_Object code_conversion_save (bool, bool);
 extern bool encode_coding_utf_8 (struct coding_system *);
+extern bool utf8_string_p (Lisp_Object);
 extern void setup_coding_system (Lisp_Object, struct coding_system *);
 extern Lisp_Object coding_charset_list (struct coding_system *);
 extern Lisp_Object coding_system_charset_list (Lisp_Object);
@@ -704,6 +705,7 @@ extern Lisp_Object raw_text_coding_system (Lisp_Object);
 extern bool raw_text_coding_system_p (struct coding_system *);
 extern Lisp_Object coding_inherit_eol_type (Lisp_Object, Lisp_Object);
 extern Lisp_Object complement_process_encoding_system (Lisp_Object);
+extern Lisp_Object make_string_from_utf8 (const char *, ptrdiff_t);
 
 extern void decode_coding_gap (struct coding_system *,
 			       ptrdiff_t, ptrdiff_t);
@@ -755,6 +757,16 @@ extern Lisp_Object from_unicode_buffer (const wchar_t *wstr);
     decode_coding_object ((coding), Qnil, 0, 0, (bytes), (bytes),	\
 			  (dst_object));				\
   } while (false)
+
+
+/* Like build_string, but always returns a multibyte string, and is
+   optimized for speed when STR is a UTF-8 encoded text string.  */
+
+INLINE Lisp_Object
+build_string_from_utf8 (const char *str)
+{
+  return make_string_from_utf8 (str, strlen (str));
+}
 
 
 extern Lisp_Object preferred_coding_system (void);

@@ -6356,6 +6356,50 @@ check_utf_8 (struct coding_system *coding)
 }
 
 
+/* Return whether STRING is a valid UTF-8 string.  STRING must be a
+   unibyte string.  */
+
+bool
+utf8_string_p (Lisp_Object string)
+{
+  eassert (!STRING_MULTIBYTE (string));
+  struct coding_system coding;
+  setup_coding_system (Qutf_8_unix, &coding);
+  /* We initialize only the fields that check_utf_8 accesses.  */
+  coding.head_ascii = -1;
+  coding.src_pos = 0;
+  coding.src_pos_byte = 0;
+  coding.src_chars = SCHARS (string);
+  coding.src_bytes = SBYTES (string);
+  coding.src_object = string;
+  coding.eol_seen = EOL_SEEN_NONE;
+  return check_utf_8 (&coding) != -1;
+}
+
+/* Like make_string, but always returns a multibyte Lisp string, and
+   avoids decoding if TEXT encoded in UTF-8.  */
+
+Lisp_Object
+make_string_from_utf8 (const char *text, ptrdiff_t nbytes)
+{
+  ptrdiff_t chars, bytes;
+  parse_str_as_multibyte ((const unsigned char *) text, nbytes,
+			  &chars, &bytes);
+  /* If TEXT is a valid UTF-8 string, we can convert it to a Lisp
+     string directly.  Otherwise, we need to decode it.  */
+  if (chars == nbytes || bytes == nbytes)
+    return make_specified_string (text, chars, nbytes, true);
+  else
+    {
+      struct coding_system coding;
+      setup_coding_system (Qutf_8_unix, &coding);
+      coding.mode |= CODING_MODE_LAST_BLOCK;
+      coding.source = (const unsigned char *) text;
+      decode_coding_object (&coding, Qnil, 0, 0, nbytes, nbytes, Qt);
+      return coding.dst_object;
+    }
+}
+
 /* Detect how end-of-line of a text of length SRC_BYTES pointed by
    SOURCE is encoded.  If CATEGORY is one of
    coding_category_utf_16_XXXX, assume that CR and LF are encoded by
@@ -10865,6 +10909,7 @@ syms_of_coding (void)
   DEFSYM (Qiso_2022, "iso-2022");
 
   DEFSYM (Qutf_8, "utf-8");
+  DEFSYM (Qutf_8_unix, "utf-8-unix");
   DEFSYM (Qutf_8_emacs, "utf-8-emacs");
 
 #if defined (WINDOWSNT) || defined (CYGWIN)

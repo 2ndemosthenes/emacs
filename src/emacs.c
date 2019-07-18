@@ -1271,6 +1271,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   running_asynch_code = 0;
   init_random ();
 
+#if defined HAVE_JSON && !defined WINDOWSNT
+  init_json ();
+#endif
+
   no_loadup
     = argmatch (argv, argc, "-nl", "--no-loadup", 6, NULL, &skip_args);
 
@@ -1618,6 +1622,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
       syms_of_threads ();
       syms_of_profiler ();
+
+#ifdef HAVE_JSON
+      syms_of_json ();
+#endif
 
       keys_of_casefiddle ();
       keys_of_cmds ();
