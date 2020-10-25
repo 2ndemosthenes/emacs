@@ -128,6 +128,11 @@ before compilation.  Usable to modify the compiler environment."
   :type 'list
   :group 'comp)
 
+(defcustom comp-async-report-warnings-errors t
+  "Report warnings and errors from native asynchronous compilation."
+  :type 'boolean
+  :group 'comp)
+
 (defcustom comp-native-driver-options nil
   "Options passed verbatim to the native compiler's backend driver.
 Note that not all options are meaningful; typically only the options
@@ -2526,8 +2531,7 @@ Prepare every function for final compilation and drive the C back-end."
       ;; In case it's created in the meanwhile.
       (ignore-error 'file-already-exists
         (make-directory dir t)))
-    (unless comp-dry-run
-      (comp--compile-ctxt-to-file name))))
+    (comp--compile-ctxt-to-file name)))
 
 (defun comp-final1 ()
   (let (compile-result)
@@ -2540,44 +2544,45 @@ Prepare every function for final compilation and drive the C back-end."
 
 (defun comp-final (_)
   "Final pass driving the C back-end for code emission."
-  (if noninteractive
-      (comp-final1)
-    ;; Call comp-final1 in a child process.
-    (let* ((output (comp-ctxt-output comp-ctxt))
-           (print-escape-newlines t)
-           (print-length nil)
-           (print-level nil)
-           (print-quoted t)
-           (print-gensym t)
-           (print-circle t)
-           (expr `(progn
-                    (require 'comp)
-                    (setf comp-speed ,comp-speed
-                          comp-debug ,comp-debug
-                          comp-verbose ,comp-verbose
-                          comp-ctxt ,comp-ctxt
-                          comp-eln-load-path ',comp-eln-load-path
-                          comp-native-driver-options
-                          ',comp-native-driver-options
-                          load-path ',load-path)
-                    ,comp-async-env-modifier-form
-                    (message "Compiling %s..." ',output)
-                    (comp-final1)))
-           (temp-file (make-temp-file
-                       (concat "emacs-int-comp-"
-                               (file-name-base output) "-")
-                       nil ".el")))
-      (with-temp-file temp-file
-        (insert (prin1-to-string expr)))
-      (with-temp-buffer
-        (unwind-protect
-            (if (zerop
-                 (call-process (expand-file-name invocation-name
-                                                 invocation-directory)
-                               nil t t "--batch" "-l" temp-file))
-                output
-              (signal 'native-compiler-error (buffer-string)))
-          (comp-log-to-buffer (buffer-string)))))))
+  (unless comp-dry-run
+    (if noninteractive
+	(comp-final1)
+      ;; Call comp-final1 in a child process.
+      (let* ((output (comp-ctxt-output comp-ctxt))
+             (print-escape-newlines t)
+             (print-length nil)
+             (print-level nil)
+             (print-quoted t)
+             (print-gensym t)
+             (print-circle t)
+             (expr `(progn
+                      (require 'comp)
+                      (setf comp-speed ,comp-speed
+                            comp-debug ,comp-debug
+                            comp-verbose ,comp-verbose
+                            comp-ctxt ,comp-ctxt
+                            comp-eln-load-path ',comp-eln-load-path
+                            comp-native-driver-options
+                            ',comp-native-driver-options
+                            load-path ',load-path)
+                      ,comp-async-env-modifier-form
+                      (message "Compiling %s..." ',output)
+                      (comp-final1)))
+             (temp-file (make-temp-file
+			 (concat "emacs-int-comp-"
+				 (file-name-base output) "-")
+			 nil ".el")))
+	(with-temp-file temp-file
+          (insert (prin1-to-string expr)))
+	(with-temp-buffer
+          (unwind-protect
+              (if (zerop
+                   (call-process (expand-file-name invocation-name
+                                                   invocation-directory)
+				 nil t t "--batch" "-l" temp-file))
+                  output
+		(signal 'native-compiler-error (buffer-string)))
+            (comp-log-to-buffer (buffer-string))))))))
 
 
 ;;; Compiler type hints.
@@ -2768,6 +2773,21 @@ processes from `comp-async-compilations'"
                           2))))
     comp-async-jobs-number))
 
+(defvar comp-last-scanned-async-output nil)
+(make-variable-buffer-local 'comp-last-scanned-async-output)
+(defun comp-accept-and-process-async-output (process)
+  "Accept PROCESS output and check for diagnostic messages."
+  (if comp-async-report-warnings-errors
+      (with-current-buffer (process-buffer process)
+        (save-excursion
+          (accept-process-output process)
+          (goto-char (or comp-last-scanned-async-output (point-min)))
+          (while (re-search-forward "^.*+?\\(?:Error\\|Warning\\): .*$"
+                                    nil t)
+            (display-warning 'comp (match-string 0)))
+          (setq comp-last-scanned-async-output (point-max))))
+    (accept-process-output process)))
+
 (defun comp-run-async-workers ()
   "Start compiling files from `comp-files-queue' asynchronously.
 When compilation is finished, run `comp-async-all-done-hook' and
@@ -2822,7 +2842,7 @@ display a message."
                                (run-hook-with-args
                                 'comp-async-cu-done-hook
                                 source-file)
-                               (accept-process-output process)
+                               (comp-accept-and-process-async-output process)
                                (ignore-errors (delete-file temp-file))
                                (when (and load1
                                           (zerop (process-exit-status process)))
