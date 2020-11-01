@@ -418,7 +418,8 @@ https://lists.gnu.org/archive/html/bug-gnu-emacs/2020-03/msg00914.html."
 (comp-deftest compile-forms ()
   "Verify lambda form native compilation."
   (should-error (native-compile '(+ 1 foo)))
-  (let ((f (native-compile '(lambda (x) (1+ x)))))
+  (let ((lexical-binding t)
+        (f (native-compile '(lambda (x) (1+ x)))))
     (should (subr-native-elisp-p f))
     (should (= (funcall f 2) 3)))
   (let* ((lexical-binding nil)
@@ -686,28 +687,29 @@ https://lists.gnu.org/archive/html/bug-gnu-emacs/2020-03/msg00914.html."
               'comment)
     (comp-tests-mentioned-p-1 x insn)))
 
-(defun comp-tests-make-insn-checker (func-name checker)
-  "Apply CHECKER to each insn in FUNC-NAME.
-CHECKER should always return nil to have a pass."
-  (should-not
-   (cl-loop
-    named checker-loop
-    with func-c-name = (comp-c-func-name func-name "F" t)
+(defun comp-tests-map-checker (func-name checker)
+  "Apply CHECKER to each insn of FUNC-NAME.
+Return a list of results."
+  (cl-loop
+    with func-c-name = (comp-c-func-name (or func-name 'anonymous-lambda) "F" t)
     with f = (gethash func-c-name (comp-ctxt-funcs-h comp-ctxt))
     for bb being each hash-value of (comp-func-blocks f)
-    do (cl-loop
-        for insn in (comp-block-insns bb)
-        when (funcall checker insn)
-          do (cl-return-from checker-loop 'mentioned)))))
+    nconc
+    (cl-loop
+     for insn in (comp-block-insns bb)
+     collect (funcall checker insn))))
 
 (defun comp-tests-tco-checker (_)
   "Check that inside `comp-tests-tco-f' we have no recursion."
-  (comp-tests-make-insn-checker
-   'comp-tests-tco-f
-   (lambda (insn)
-     (or (comp-tests-mentioned-p 'comp-tests-tco-f insn)
-         (comp-tests-mentioned-p (comp-c-func-name 'comp-tests-tco-f "F" t)
-                                 insn)))))
+  (should
+   (cl-notany
+    #'identity
+    (comp-tests-map-checker
+     'comp-tests-tco-f
+     (lambda (insn)
+       (or (comp-tests-mentioned-p 'comp-tests-tco-f insn)
+           (comp-tests-mentioned-p (comp-c-func-name 'comp-tests-tco-f "F" t)
+                                   insn)))))))
 
 (comp-deftest tco ()
   "Check for tail recursion elimination."
@@ -728,11 +730,14 @@ CHECKER should always return nil to have a pass."
 
 (defun comp-tests-fw-prop-checker-1 (_)
   "Check that inside `comp-tests-fw-prop-f' `concat' and `length' are folded."
-  (comp-tests-make-insn-checker
-   'comp-tests-fw-prop-1-f
-   (lambda (insn)
-     (or (comp-tests-mentioned-p 'concat insn)
-         (comp-tests-mentioned-p 'length insn)))))
+  (should
+   (cl-notany
+    #'identity
+    (comp-tests-map-checker
+     'comp-tests-fw-prop-1-f
+     (lambda (insn)
+       (or (comp-tests-mentioned-p 'concat insn)
+           (comp-tests-mentioned-p 'length insn)))))))
 
 (comp-deftest fw-prop ()
   "Some tests for forward propagation."
@@ -751,21 +756,28 @@ CHECKER should always return nil to have a pass."
 (defun comp-tests-pure-checker-1 (_)
   "Check that inside `comp-tests-pure-caller-f' `comp-tests-pure-callee-f' is
  folded."
-  (comp-tests-make-insn-checker
-   'comp-tests-pure-caller-f
-   (lambda (insn)
-     (or (comp-tests-mentioned-p 'comp-tests-pure-callee-f insn)
-         (comp-tests-mentioned-p (comp-c-func-name 'comp-tests-pure-callee-f "F" t)
-                                 insn)))))
+  (should
+   (cl-notany
+    #'identity
+    (comp-tests-map-checker
+     'comp-tests-pure-caller-f
+     (lambda (insn)
+       (or (comp-tests-mentioned-p 'comp-tests-pure-callee-f insn)
+           (comp-tests-mentioned-p (comp-c-func-name
+                                    'comp-tests-pure-callee-f "F" t)
+                                   insn)))))))
 
 (defun comp-tests-pure-checker-2 (_)
   "Check that `comp-tests-pure-fibn-f' is folded."
-  (comp-tests-make-insn-checker
-   'comp-tests-pure-fibn-entry-f
-   (lambda (insn)
-     (or (comp-tests-mentioned-p 'comp-tests-pure-fibn-f insn)
-         (comp-tests-mentioned-p (comp-c-func-name 'comp-tests-pure-fibn-f "F" t)
-                                 insn)))))
+  (should
+   (cl-notany
+    #'identity
+    (comp-tests-map-checker
+     'comp-tests-pure-fibn-entry-f
+     (lambda (insn)
+       (or (comp-tests-mentioned-p 'comp-tests-pure-fibn-f insn)
+           (comp-tests-mentioned-p (comp-c-func-name 'comp-tests-pure-fibn-f "F" t)
+                                   insn)))))))
 
 (comp-deftest pure ()
   "Some tests for pure functions optimization."
@@ -779,5 +791,96 @@ CHECKER should always return nil to have a pass."
 
     (should (subr-native-elisp-p (symbol-function #'comp-tests-pure-fibn-entry-f)))
     (should (= (comp-tests-pure-fibn-entry-f) 6765))))
+
+(defvar comp-tests-cond-rw-checked-function nil
+  "Function to be checked.")
+(defun comp-tests-cond-rw-checker-val (_)
+  "Check we manage to propagate the correct return value."
+  (should
+   (cl-some
+    #'identity
+    (comp-tests-map-checker
+     comp-tests-cond-rw-checked-function
+     (lambda (insn)
+       (pcase insn
+         (`(return ,mvar)
+          (and (comp-mvar-const-vld mvar)
+               (= (comp-mvar-constant mvar) 123)))))))))
+
+(defvar comp-tests-cond-rw-expected-type nil
+  "Type to expect in `comp-tests-cond-rw-checker-type'.")
+(defun comp-tests-cond-rw-checker-type (_)
+  "Check we manage to propagate the correct return type."
+  (should
+   (cl-some
+    #'identity
+    (comp-tests-map-checker
+     comp-tests-cond-rw-checked-function
+     (lambda (insn)
+       (pcase insn
+         (`(return ,mvar)
+          (eq (comp-mvar-type mvar) comp-tests-cond-rw-expected-type))))))))
+
+(defvar comp-tests-cond-rw-0-var)
+(comp-deftest cond-rw-0 ()
+  "Check we do not miscompile some simple functions."
+  (let ((lexical-binding t))
+    (let ((f (native-compile '(lambda (l)
+                                (when (eq (car l) 'x)
+                                  (cdr l))))))
+      (should (subr-native-elisp-p f))
+      (should (eq (funcall f '(x . y)) 'y))
+      (should (null (funcall f '(z . y)))))
+
+    (should
+     (subr-native-elisp-p
+      (native-compile '(lambda () (if (eq comp-tests-cond-rw-0-var 123) 5 10)))))))
+
+(comp-deftest cond-rw-1 ()
+  "Test cond-rw pass allow us to propagate type+val under `eq' tests."
+  (let ((lexical-binding t)
+        (comp-tests-cond-rw-expected-type 'fixnum)
+        (comp-post-pass-hooks '((comp-final comp-tests-cond-rw-checker-type)
+                                (comp-final comp-tests-cond-rw-checker-val))))
+    (subr-native-elisp-p (native-compile '(lambda (x) (if (eq x 123) x t))))
+    (subr-native-elisp-p (native-compile '(lambda (x) (if (eq 123 x) x t))))))
+
+(comp-deftest cond-rw-2 ()
+  "Test cond-rw pass allow us to propagate type+val under `=' tests."
+  (let ((lexical-binding t)
+        (comp-tests-cond-rw-expected-type 'fixnum)
+        (comp-post-pass-hooks '((comp-final comp-tests-cond-rw-checker-type)
+                                (comp-final comp-tests-cond-rw-checker-val))))
+    (subr-native-elisp-p (native-compile '(lambda (x) (if (= x 123) x t))))))
+
+(comp-deftest cond-rw-3 ()
+  "Test cond-rw pass allow us to propagate type+val under `eql' tests."
+  (let ((lexical-binding t)
+        (comp-tests-cond-rw-expected-type 'fixnum)
+        (comp-post-pass-hooks '((comp-final comp-tests-cond-rw-checker-type)
+                                (comp-final comp-tests-cond-rw-checker-val))))
+    (subr-native-elisp-p (native-compile '(lambda (x) (if (eql 123 x) x t))))))
+
+(comp-deftest cond-rw-4 ()
+  "Test cond-rw pass allow us to propagate type under `=' tests."
+  (let ((lexical-binding t)
+        (comp-tests-cond-rw-expected-type 'number)
+        (comp-post-pass-hooks '((comp-final comp-tests-cond-rw-checker-type))))
+    (subr-native-elisp-p (native-compile '(lambda (x y) (if (= x y) x t))))))
+
+(comp-deftest cond-rw-5 ()
+  "Test cond-rw pass allow us to propagate type under `=' tests."
+  (let ((lexical-binding t)
+        (comp-tests-cond-rw-checked-function #'comp-tests-cond-rw-4-f)
+        (comp-tests-cond-rw-expected-type 'fixnum)
+        (comp-post-pass-hooks '((comp-final comp-tests-cond-rw-checker-type))))
+    (eval '(defun comp-tests-cond-rw-4-f (x y)
+             (declare (speed 3))
+             (if (= x (comp-hint-fixnum y))
+                 x
+               t))
+          t)
+    (native-compile #'comp-tests-cond-rw-4-f)
+    (should (subr-native-elisp-p (symbol-function #'comp-tests-cond-rw-4-f)))))
 
 ;;; comp-tests.el ends here
