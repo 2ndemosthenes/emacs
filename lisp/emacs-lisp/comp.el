@@ -51,6 +51,7 @@
 - 3 max optimization level, to be used only when necessary.
     Warning: the compiler is free to perform dangerous optimizations."
   :type 'number
+  :safe #'numberp
   :group 'comp)
 
 (defcustom comp-debug 0
@@ -62,6 +63,7 @@ This intended for debugging the compiler itself.
 - 2 dump gcc passes and libgccjit log file.
 - 3 dump libgccjit reproducers."
   :type 'number
+  :safe #'numberp
   :group 'comp)
 
 (defcustom comp-verbose 0
@@ -256,6 +258,10 @@ Useful to hook into pass checkers.")
   "Lisp side of the compiler context."
   (output nil :type string
           :documentation "Target output file-name for the compilation.")
+  (speed comp-speed :type number
+         :documentation "Default speed for this compilation unit.")
+  (debug comp-debug :type number
+         :documentation "Default debug level for this compilation unit.")
   (top-level-forms () :type list
                    :documentation "List of spilled top level forms.")
   (funcs-h (make-hash-table :test #'equal) :type hash-table
@@ -278,7 +284,10 @@ This is tipically for top-level forms other than defun.")
   (d-ephemeral (make-comp-data-container) :type comp-data-container
                :documentation "Relocated data not necessary after load.")
   (with-late-load nil :type boolean
-                  :documentation "When non-nil support late load."))
+                  :documentation "When non-nil support late load.")
+  (supertype-memoize (make-hash-table :test #'equal) :type hash-table
+                     :documentation "Serve memoization for
+ `comp-common-supertype'."))
 
 (cl-defstruct comp-args-base
   (min nil :type number
@@ -602,7 +611,7 @@ instruction."
 (defun comp-spill-speed (function-name)
   "Return the speed for FUNCTION-NAME."
   (or (comp-spill-decl-spec function-name 'speed)
-      comp-speed))
+      (comp-ctxt-speed comp-ctxt)))
 
 ;; Autoloaded as might be used by `disassemble-internal'.
 ;;;###autoload
@@ -720,11 +729,11 @@ clashes."
                    (make-comp-func-l :c-name c-name
                                      :doc (documentation form t)
                                      :int-spec (interactive-form form)
-                                     :speed comp-speed)
+                                     :speed (comp-ctxt-speed comp-ctxt))
                  (make-comp-func-d :c-name c-name
                                    :doc (documentation form t)
                                    :int-spec (interactive-form form)
-                                   :speed comp-speed))))
+                                   :speed (comp-ctxt-speed comp-ctxt)))))
     (let ((lap (byte-to-native-lambda-lap
                 (gethash (aref byte-code 1)
                          byte-to-native-lambdas-h))))
@@ -795,7 +804,11 @@ clashes."
                                         filename
                                         (when byte-native-for-bootstrap
                                           (car (last comp-eln-load-path))))))
-  (setf (comp-ctxt-top-level-forms comp-ctxt)
+  (setf (comp-ctxt-speed comp-ctxt) (alist-get 'comp-speed
+                                               byte-native-qualities)
+        (comp-ctxt-debug comp-ctxt) (alist-get 'comp-debug
+                                               byte-native-qualities)
+        (comp-ctxt-top-level-forms comp-ctxt)
         (cl-loop
          for form in (reverse byte-to-native-top-level-forms)
          collect
@@ -1572,7 +1585,7 @@ into the C code forwarding the compilation unit."
                                  ;; the last function being
                                  ;; registered.
                                  :frame-size 2
-                                 :speed comp-speed))
+                                 :speed (comp-ctxt-speed comp-ctxt)))
          (comp-func func)
          (comp-pass (make-comp-limplify
                      :curr-block (make--comp-block-lap -1 0 'top-level)
@@ -2124,6 +2137,40 @@ PRE-LAMBDA and POST-LAMBDA are called in pre or post-order if non-nil."
       'fixnum
     (type-of obj)))
 
+(defun comp-supertypes (type)
+  "Return a list of pairs (supertype . hierarchy-level) for TYPE."
+  (cl-loop
+   named outer
+   with found = nil
+   for l in cl--typeof-types
+   do (cl-loop
+       for x in l
+       for i from (length l) downto 0
+       when (eq type x)
+         do (setf found t)
+       when found
+         collect `(,x . ,i) into res
+       finally (when found
+                 (cl-return-from outer res)))))
+
+(defun comp-common-supertype-2 (type1 type2)
+  "Return the first common supertype of TYPE1 TYPE2."
+  (car (cl-reduce (lambda (x y)
+                    (if (> (cdr x) (cdr y))
+                        x
+                      y))
+                  (cl-intersection
+                   (comp-supertypes type1)
+                   (comp-supertypes type2)
+                   :key #'car))))
+
+(defun comp-common-supertype (&rest types)
+  "Return the first common supertype of TYPES."
+  (or (gethash types (comp-ctxt-supertype-memoize comp-ctxt))
+      (puthash types
+               (cl-reduce #'comp-common-supertype-2 types)
+               (comp-ctxt-supertype-memoize comp-ctxt))))
+
 (defun comp-copy-insn (insn)
   "Deep copy INSN."
   ;; Adapted from `copy-tree'.
@@ -2252,12 +2299,9 @@ Forward propagate immediate involed in assignments."
        (setf (comp-mvar-const-vld lval) t
              (comp-mvar-constant lval) x))
      ;; Forward type propagation.
-     ;; FIXME: checking for type equality is not sufficient cause does not
-     ;; account type hierarchy!
      (when-let* ((types (mapcar #'comp-mvar-type rest))
                  (non-empty (cl-notany #'null types))
-                 (x (car types))
-                 (eqs (cl-every (lambda (y) (eq x y)) types)))
+                 (x (comp-common-supertype types)))
        (setf (comp-mvar-type lval) x)))))
 
 (defun comp-fwprop* ()
@@ -2636,9 +2680,7 @@ Prepare every function for final compilation and drive the C back-end."
              (print-circle t)
              (expr `(progn
                       (require 'comp)
-                      (setf comp-speed ,comp-speed
-                            comp-debug ,comp-debug
-                            comp-verbose ,comp-verbose
+                      (setf comp-verbose ,comp-verbose
                             comp-ctxt ,comp-ctxt
                             comp-eln-load-path ',comp-eln-load-path
                             comp-native-driver-options
@@ -2954,6 +2996,7 @@ load once finished compiling."
             (list "Not a function symbol or file" function-or-file)))
   (let* ((data function-or-file)
          (comp-native-compiling t)
+         (byte-native-qualities nil)
          ;; Have byte compiler signal an error when compilation fails.
          (byte-compile-debug t)
          (comp-ctxt (make-comp-ctxt :output output
