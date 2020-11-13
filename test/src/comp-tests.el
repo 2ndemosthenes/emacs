@@ -444,6 +444,11 @@ https://lists.gnu.org/archive/html/bug-gnu-emacs/2020-03/msg00914.html."
   (should (= (comp-test-and-3-f t) 2))
   (should (null (comp-test-and-3-f '(1 2)))))
 
+(comp-deftest copy-insn ()
+  (should (equal (comp-test-copy-insn-f '(1 2 3 (4 5 6)))
+                 '(1 2 3 (4 5 6))))
+  (should (null (comp-test-copy-insn-f nil))))
+
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;; Tromey's tests. ;;
@@ -771,19 +776,19 @@ Return a list of results."
     (native-compile (cadr func-form))))
 
 (defconst comp-tests-type-spec-tests
-  `(((defun comp-tests-ret-type-spec-0-f (x)
+  `(((defun comp-tests-ret-type-spec-f (x)
        x)
-     (t))
+     t)
 
-    ((defun comp-tests-ret-type-spec-1-f ()
+    ((defun comp-tests-ret-type-spec-f ()
        1)
      (integer 1 1))
 
-    ((defun comp-tests-ret-type-spec-2-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if x 1 3))
      (or (integer 1 1) (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-3-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (let (y)
          (if x
              (setf y 1)
@@ -791,7 +796,7 @@ Return a list of results."
          y))
      (integer 1 2))
 
-    ((defun comp-tests-ret-type-spec-4-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (let (y)
          (if x
              (setf y 1)
@@ -799,48 +804,48 @@ Return a list of results."
          y))
      (or (integer 1 1) (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-5-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if x
            (list x)
          3))
      (or cons (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-6-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if x
            'foo
          3))
      (or (member foo) (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-7-1-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if (eq x 3)
            x
          'foo))
      (or (member foo) (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-7-2-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if (eq 3 x)
            x
          'foo))
      (or (member foo) (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-8-1-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if (= x 3)
            x
          'foo))
      (or (member foo) (integer 3 3)))
 
-    ((defun comp-tests-ret-type-spec-8-2-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (if (= 3 x)
            x
          'foo))
      (or (member foo) (integer 3 3)))
 
-    ;; FIXME returning ATM (or t (member foo))
-    ;; ((defun comp-tests-ret-type-spec-8-3-f (x)
-    ;;    (if (= x 3)
-    ;;        'foo
-    ;;      x))
-    ;;  (or number (member foo)))
+    ;; FIXME would be nice to have (or number (member foo))
+    ((defun comp-tests-ret-type-spec-8-3-f (x)
+       (if (= x 3)
+           'foo
+         x))
+     t)
 
     ((defun comp-tests-ret-type-spec-8-4-f (x y)
        (if (= x y)
@@ -852,9 +857,30 @@ Return a list of results."
        (comp-hint-fixnum y))
      (integer ,most-negative-fixnum ,most-positive-fixnum))
 
-    ((defun comp-tests-ret-type-spec-9-1-f (x)
+    ((defun comp-tests-ret-type-spec-f (x)
        (comp-hint-cons x))
-     (cons))))
+     cons)
+
+    ((defun comp-tests-ret-type-spec-f (x)
+        (let (y)
+          (when x
+            (setf y 4))
+          y))
+     (or null (integer 4 4)))
+
+    ((defun comp-tests-ret-type-spec-f ()
+        (let (x
+              (y 3))
+          (setf x y)
+          y))
+     (integer 3 3))
+
+    ((defun comp-tests-ret-type-spec-f (x)
+       (let ((y 3))
+         (when x
+           (setf y x))
+         y))
+     t)))
 
 (comp-deftest ret-type-spec ()
   "Some derived return type specifier tests."

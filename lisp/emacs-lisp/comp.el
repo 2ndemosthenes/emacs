@@ -308,7 +308,10 @@ This is tipically for top-level forms other than defun.")
                   :documentation "When non-nil support late load.")
   (union-typesets-mem (make-hash-table :test #'equal) :type hash-table
                       :documentation "Serve memoization for
-`comp-union-typesets'."))
+`comp-union-typesets'.")
+  (common-supertype-mem (make-hash-table :test #'equal) :type hash-table
+                        :documentation "Serve memoization for
+`comp-common-supertype'."))
 
 (cl-defstruct comp-args-base
   (min nil :type number
@@ -453,15 +456,21 @@ Interg values are handled in the `range' slot.")
 
 (defun comp-mvar-value-vld-p (mvar)
   "Return t if one single value can be extracted by the MVAR constrains."
-  (or (= (length (comp-mvar-valset mvar)) 1)
-      (let ((r (comp-mvar-range mvar)))
-        (and (= (length r) 1)
-             (let ((low (caar r))
-                   (high (cdar r)))
-               (and
-                (integerp low)
-                (integerp high)
-                (= low high)))))))
+  (when (null (comp-mvar-typeset mvar))
+    (let* ((v (comp-mvar-valset mvar))
+           (r (comp-mvar-range mvar))
+           (valset-len (length v))
+           (range-len (length r)))
+      (if (and (= valset-len 1)
+               (= range-len 0))
+          t
+        (when (and (= valset-len 0)
+                   (= range-len 1))
+          (let* ((low (caar r))
+                 (high (cdar r)))
+            (and (integerp low)
+                 (integerp high)
+                 (= low high))))))))
 
 (defun comp-mvar-value (mvar)
   "Return the constant value of MVAR.
@@ -2252,7 +2261,10 @@ PRE-LAMBDA and POST-LAMBDA are called in pre or post-order if non-nil."
 
 (defun comp-common-supertype (&rest types)
   "Return the first common supertype of TYPES."
-  (cl-reduce #'comp-common-supertype-2 types))
+  (or (gethash types (comp-ctxt-common-supertype-mem comp-ctxt))
+      (puthash types
+               (cl-reduce #'comp-common-supertype-2 types)
+               (comp-ctxt-common-supertype-mem comp-ctxt))))
 
 (defsubst comp-subtype-p (type1 type2)
   "Return t if TYPE1 is a subtype of TYPE1 or nil otherwise."
@@ -2437,6 +2449,45 @@ Forward propagate immediate involed in assignments."
                (value (comp-apply-in-env f (mapcar #'comp-mvar-value args))))
           (rewrite-insn-as-setimm insn value)))))))
 
+(defun comp-phi (lval &rest rvals)
+  "Phi function propagating RVALS into LVAL.
+Return LVAL."
+  (let* ((rhs-mvars (mapcar #'car rvals))
+         (values (mapcar #'comp-mvar-valset rhs-mvars))
+         (from-latch (cl-some
+                      (lambda (x)
+                        (comp-latch-p
+                         (gethash (cdr x)
+                                  (comp-func-blocks comp-func))))
+                      rvals)))
+
+    ;; Type propagation.
+    (setf (comp-mvar-typeset lval)
+          (apply #'comp-union-typesets (mapcar #'comp-mvar-typeset rhs-mvars)))
+
+    ;; Value propagation.
+    (setf (comp-mvar-valset lval)
+          (cl-loop
+           for v in (cl-remove-duplicates (apply #'append values)
+                                          :test #'equal)
+           ;; We propagate only values those types are not already
+           ;; into typeset.
+           when (cl-notany (lambda (x)
+                             (comp-subtype-p (type-of v) x))
+                           (comp-mvar-typeset lval))
+             collect v))
+
+    ;; Range propagation
+    (setf (comp-mvar-range lval)
+          (when (and (not from-latch)
+                     (cl-notany (lambda (x)
+                                  (comp-subtype-p 'integer x))
+                                (comp-mvar-typeset lval)))
+            ;; TODO memoize?
+            (apply #'comp-range-union
+                   (mapcar #'comp-mvar-range rhs-mvars))))
+    lval))
+
 (defun comp-fwprop-insn (insn)
   "Propagate within INSN."
   (pcase insn
@@ -2477,33 +2528,7 @@ Forward propagate immediate involed in assignments."
     (`(setimm ,lval ,v)
      (setf (comp-mvar-value lval) v))
     (`(phi ,lval . ,rest)
-     (let* ((rvals (mapcar #'car rest))
-            (values (mapcar #'comp-mvar-valset rvals))
-            (from-latch (cl-some
-                         (lambda (x)
-                           (comp-latch-p
-                            (gethash (cdr x)
-                                     (comp-func-blocks comp-func))))
-                         rest)))
-
-       ;; Type propagation.
-       (setf (comp-mvar-typeset lval)
-             (apply #'comp-union-typesets (mapcar #'comp-mvar-typeset rvals)))
-       ;; Value propagation.
-       (setf (comp-mvar-valset lval)
-             (when (cl-every #'consp values)
-               ;; TODO memoize?
-               (cl-remove-duplicates (apply #'append values)
-                                     :test #'equal)))
-       ;; Range propagation
-       (setf (comp-mvar-range lval)
-             (when (and (not from-latch)
-                        (cl-notany (lambda (x)
-                                     (comp-subtype-p 'integer x))
-                                   (comp-mvar-typeset lval)))
-               ;; TODO memoize?
-               (apply #'comp-range-union
-                      (mapcar #'comp-mvar-range rvals))))))))
+     (apply #'comp-phi lval rest))))
 
 (defun comp-fwprop* ()
   "Propagate for set* and phi operands.
@@ -2773,49 +2798,48 @@ These are substituted with a normal 'set' op."
 (defun comp-ret-type-spec (_ func)
   "Compute type specifier for `comp-func' FUNC.
 Set it into the `ret-type-specifier' slot."
-  (cl-loop
-   with res-typeset = nil
-   with res-valset = nil
-   with res-range = nil
-   for bb being the hash-value in (comp-func-blocks func)
-   do (cl-loop
-       for insn in (comp-block-insns bb)
-       do (pcase insn
-	    (`(return ,mvar)
-	      (when-let ((typeset (comp-mvar-typeset mvar)))
-		(setf res-typeset (comp-union-typesets res-typeset typeset)))
-	      (when-let ((valset (comp-mvar-valset mvar)))
-		(setf res-valset (append res-valset valset)))
-	      (when-let (range (comp-mvar-range mvar))
-		(setf res-range (comp-range-union res-range range))))))
-   finally
-   (when res-valset
-     (setf res-typeset
-           (cl-loop
-            with res = (copy-sequence res-typeset)
-            for type in res-typeset
-            for pred = (alist-get type comp-type-predicates)
-            when pred
-              do (cl-loop
-                  for v in res-valset
-                  when (funcall pred v)
-                    do (setf res (remove type res)))
-            finally (cl-return res))))
-   (setf res-range (cl-loop for (l . h) in res-range
-                            for low = (if (numberp l) l '*)
-                            for high = (if (numberp h) h '*)
-                            collect `(integer ,low , high))
-         res-valset (cl-remove-duplicates res-valset))
-   (let ((res (append res-typeset
-                      (when res-valset
-                        `((member ,@res-valset)))
-                      res-range)))
-     (setf (comp-func-ret-type-specifier func)
-           (if (> (length res) 1)
-               `(or ,@res)
-             (if (consp (car res))
-                 (car res)
-               res))))))
+  (let* ((comp-func (make-comp-func))
+         (res-mvar (apply #'comp-phi
+                          (make-comp-mvar)
+                          (cl-loop
+                           with res = nil
+                           for bb being the hash-value in (comp-func-blocks
+                                                           func)
+                           do (cl-loop
+                               for insn in (comp-block-insns bb)
+                               ;; Collect over every exit point the returned
+                               ;; mvars and union results.
+                               do (pcase insn
+                                    (`(return ,mvar)
+                                     (push `(,mvar . nil) res))))
+                           finally (cl-return res))))
+         (res-valset (comp-mvar-valset res-mvar))
+         (res-typeset (comp-mvar-typeset res-mvar))
+         (res-range (comp-mvar-range res-mvar)))
+    ;; If nil is a value convert it into a `null' type specifier.
+    (when res-valset
+      (when (memq nil res-valset)
+        (setf res-valset (remove nil res-valset))
+        (push 'null res-typeset)))
+
+    ;; Form proper integer type specifiers.
+    (setf res-range (cl-loop for (l . h) in res-range
+                             for low = (if (integerp l) l '*)
+                             for high = (if (integerp h) h '*)
+                             collect `(integer ,low , high))
+          res-valset (cl-remove-duplicates res-valset))
+
+    ;; Form the final type specifier.
+    (let ((res (append res-typeset
+                       (when res-valset
+                         `((member ,@res-valset)))
+                       res-range)))
+      (setf (comp-func-ret-type-specifier func)
+            (if (> (length res) 1)
+                `(or ,@res)
+              (if (memq (car-safe res) '(member integer))
+                  res
+                (car res)))))))
 
 (defun comp-finalize-container (cont)
   "Finalize data container CONT."
