@@ -880,7 +880,11 @@ Return a list of results."
          (when x
            (setf y x))
          y))
-     t)))
+     t)
+
+    ((defun comp-tests-ret-type-spec-f (x y)
+       (eq x y))
+     boolean)))
 
 (comp-deftest ret-type-spec ()
   "Some derived return type specifier tests."
@@ -999,5 +1003,40 @@ Return a list of results."
                    '(list symbol number)))
     (should (equal (comp-union-typesets '(integer symbol) '())
                    '(symbol integer)))))
+
+(comp-deftest destructure-type-spec ()
+  (should (equal (comp-type-spec-to-constraint 'symbol)
+                 (make-comp-constraint :typeset '(symbol))))
+  (should (equal (comp-type-spec-to-constraint '(or symbol number))
+                 (make-comp-constraint :typeset '(number symbol))))
+  (should-error (comp-type-spec-to-constraint '(symbol number)))
+  (should (equal (comp-type-spec-to-constraint '(member foo bar))
+                 (make-comp-constraint :typeset nil :valset '(foo bar))))
+  (should (equal (comp-type-spec-to-constraint '(integer 1 2))
+                 (make-comp-constraint :typeset nil :range '((1 . 2)))))
+  (should (equal (comp-type-spec-to-constraint '(or (integer 1 2) (integer 4 5)))
+                 (make-comp-constraint :typeset nil :range '((4 . 5) (1 . 2)))))
+  (should (equal (comp-type-spec-to-constraint '(integer * 2))
+                 (make-comp-constraint :typeset nil :range '((- . 2)))))
+  (should (equal (comp-type-spec-to-constraint '(integer 1 *))
+                 (make-comp-constraint :typeset nil :range '((1 . +)))))
+  (should (equal (comp-type-spec-to-constraint '(integer * *))
+                 (make-comp-constraint :typeset nil :range '((- . +)))))
+  (should (equal (comp-type-spec-to-constraint '(or (integer 1 2)
+                                                    (member foo bar)))
+                 (make-comp-constraint :typeset nil
+                                       :valset '(foo bar)
+                                       :range '((1 . 2)))))
+  (should (equal (comp-type-spec-to-constraint
+                  '(function (t t) cons))
+                 (make-comp-constraint-f
+                  :args `(,(make-comp-constraint :typeset '(t))
+                          ,(make-comp-constraint :typeset '(t)))
+                  :ret (make-comp-constraint :typeset '(cons)))))
+  (should (equal (comp-type-spec-to-constraint
+                  '(function ((or integer symbol)) float))
+                 (make-comp-constraint-f
+                  :args `(,(make-comp-constraint :typeset '(symbol integer)))
+                  :ret (make-comp-constraint :typeset '(float))))))
 
 ;;; comp-tests.el ends here

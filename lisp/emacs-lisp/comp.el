@@ -191,30 +191,91 @@ For internal use only by the testsuite.")
 Each function in FUNCTIONS is run after PASS.
 Useful to hook into pass checkers.")
 
-(defconst comp-known-ret-types '((cons . (cons))
-                                 (1+ . (number))
-                                 (1- . (number))
-                                 (+ . (number))
-                                 (- . (number))
-                                 (* . (number))
-                                 (/ . (number))
-                                 (% . (number))
-                                 ;; Type hints
-                                 (comp-hint-cons . (cons)))
+;; FIXME this probably should not be here but... good for now.
+(defconst comp-known-type-specifiers
+  `((cons (function (t t) cons))
+    (1+ (function ((or number marker)) number))
+    (1- (function ((or number marker)) number))
+    (+ (function (&rest (or number marker)) number))
+    (- (function (&rest (or number marker)) number))
+    (* (function (&rest (or number marker)) number))
+    (/ (function ((or number marker) &rest (or number marker)) number))
+    (% (function ((or number marker) (or number marker)) number))
+    (concat (function (&rest sequence) string))
+    (regexp-opt (function (list) string))
+    (string-to-char (function (string) integer))
+    (symbol-name (function (symbol) string))
+    (eq (function (t t) boolean))
+    (eql (function (t t) boolean))
+    (= (function ((or number marker) (or number marker)) boolean))
+    (/= (function ((or number marker) (or number marker)) boolean))
+    (< (function ((or number marker) &rest (or number marker)) boolean))
+    (<= (function ((or number marker) &rest (or number marker)) boolean))
+    (>= (function ((or number marker) &rest (or number marker)) boolean))
+    (> (function ((or number marker) &rest (or number marker)) boolean))
+    (min (function ((or number marker) &rest (or number marker)) number))
+    (max (function ((or number marker) &rest (or number marker)) number))
+    (mod (function ((or number marker) (or number marker))
+                   (or (integer 0 *) (float 0 *))))
+    (abs (function (number) number))
+    (ash (function (integer integer) integer))
+    (sqrt (function (number) float))
+    (logand (function (&rest (or integer marker)) integer))
+    (logior (function (&rest (or integer marker)) integer))
+    (lognot (function (integer) integer))
+    (logxor (function (&rest (or integer marker)) integer))
+    (logcount (function (integer) integer))
+    (copysign (function (float float) float))
+    (isnan (function (float) boolean))
+    (ldexp (function (number integer) float))
+    (float (function (number) float))
+    (logb (function (number) integer))
+    (floor (function (number &optional number) integer))
+    (ceiling (function (number &optional number) integer))
+    (round (function (number &optional number) integer))
+    (truncate (function (number &optional number) integer))
+    (ffloor (function (float) float))
+    (fceiling (function (float) float))
+    (fround (function (float) float))
+    (ftruncate (function (float) float))
+    (string= (function ((or string symbol) (or string symbol)) boolean))
+    (string-equal (function ((or string symbol) (or string symbol)) boolean))
+    (string< (function ((or string symbol) (or string symbol)) boolean))
+    (string-lessp (function ((or string symbol) (or string symbol)) boolean))
+    (string-search (function (string string) (or integer null)))
+    (string-to-char (function (string) integer))
+    (string-to-number (function (string &optional integer) number))
+    (string-to-syntax (function (string) cons))
+    (substring (function (string &optional integer integer) string))
+    (sxhash (function (t) integer))
+    (sxhash-equal (function (t) integer))
+    (sxhash-eq (function (t) integer))
+    (sxhash-eql (function (t) integer))
+    (symbol-function (function (symbol) t))
+    (symbol-name (function (symbol) string))
+    (symbol-plist (function (symbol) list))
+    (symbol-value (function (symbol) t))
+    (string-make-unibyte (function (string) string))
+    (string-make-multibyte (function (string) string))
+    (string-as-multibyte (function (string) string))
+    (string-as-unibyte (function (string) string))
+    (string-to-multibyte (function (string) string))
+    (tan (function (number) float))
+    (time-convert (function (t &optional (or boolean integer)) cons))
+    (truncate (function (number) integer))
+    (unibyte-char-to-multibyte (function (fixnum) fixnum)) ;; byte is fixnum
+    (upcase (function ((or fixnum string)) (or fixnum string)))
+    (user-full-name (function (&optional integer) string))
+    (user-login-name (function (&optional integer) (or string null)))
+    (user-original-login-name (function (&optional integer) (or string null)))
+    (custom-variable-p (function (symbol) boolean))
+    (vconcat (function (&rest sequence) vector))
+    ;; TODO all window-* :x
+    (zerop (function (number) boolean))
+    ;; Type hints
+    (comp-hint-fixnum (function (t) fixnum))
+    (comp-hint-cons (function (t) cons)))
   "Alist used for type propagation.")
-
-(defconst comp-known-ret-ranges
-  `((comp-hint-fixnum . (,most-negative-fixnum . ,most-positive-fixnum)))
-  "Known returned ranges.")
-
-;; TODO fill it.
-(defconst comp-type-predicates '((cons . consp)
-                                 (float . floatp)
-                                 (integer . integerp)
-                                 (number . numberp)
-                                 (string . stringp)
-                                 (symbol . symbolp))
-  "Alist type -> predicate.")
 
 (defconst comp-symbol-values-optimizable '(most-positive-fixnum
                                            most-negative-fixnum)
@@ -438,21 +499,32 @@ CFG is mutated by a pass.")
   (lambda-list nil :type list
         :documentation "Original lambda-list."))
 
-(cl-defstruct (comp-mvar (:constructor make--comp-mvar))
-  "A meta-variable being a slot in the meta-stack."
-  (id nil :type (or null number)
-      :documentation "Unique id when in SSA form.")
-  (slot nil :type (or fixnum symbol)
-        :documentation "Slot number in the array if a number or
-        'scratch' for scratch slot.")
+(cl-defstruct comp-constraint
+  "Internal representation of a type/value constraint."
   (typeset '(t) :type list
            :documentation "List of possible types the mvar can assume.
 Each element cannot be a subtype of any other element of this slot.")
   (valset '() :type list
           :documentation "List of possible values the mvar can assume.
-Interg values are handled in the `range' slot.")
+Integer values are handled in the `range' slot.")
   (range '() :type list
          :documentation "Integer interval."))
+
+(cl-defstruct comp-constraint-f
+  "Internal constraint representation for a function."
+  (args nil :type (or null list)
+        :documentation "List of `comp-constraint' for its arguments.")
+  (ret nil :type (or comp-constraint comp-constraint-f)
+       :documentation "Returned value `comp-constraint'."))
+
+(cl-defstruct (comp-mvar (:constructor make--comp-mvar)
+                         (:include comp-constraint))
+  "A meta-variable being a slot in the meta-stack."
+  (id nil :type (or null number)
+      :documentation "Unique id when in SSA form.")
+  (slot nil :type (or fixnum symbol)
+        :documentation "Slot number in the array if a number or
+        'scratch' for scratch slot."))
 
 (defun comp-mvar-value-vld-p (mvar)
   "Return t if one single value can be extracted by the MVAR constrains."
@@ -529,6 +601,108 @@ To be used by all entry points."
    ((null (native-comp-available-p))
     (error "Cannot find libgccjit"))))
 
+(cl-defun comp-type-spec-to-constraint (type-specifier)
+  "Destructure TYPE-SPECIFIER.
+Return the corresponding `comp-constraint' or `comp-constraint-f'."
+  (let (typeset valset range)
+    (cl-labels ((star-or-num (x)
+                  (or (numberp x) (eq '* x)))
+                (destructure-push (x)
+                  (pcase x
+                    ('&optional
+                     (cl-return-from comp-type-spec-to-constraint '&optional))
+                    ('&rest
+                     (cl-return-from comp-type-spec-to-constraint '&rest))
+                    ('null
+                     (push nil valset))
+                    ('boolean
+                     (push t valset)
+                     (push nil valset))
+                    ('fixnum
+                     (push `(,most-negative-fixnum . ,most-positive-fixnum)
+                           range))
+                    ('bignum
+                     (push `(- . ,(1- most-negative-fixnum))
+                           range)
+                     (push `(,(1+ most-positive-fixnum) . +)
+                           range))
+                    ((pred symbolp)
+                     (push x typeset))
+                    (`(member . ,rest)
+                     (setf valset (append rest valset)))
+                    ('(integer * *)
+                     (push '(- . +) range))
+                    (`(integer ,(and low (pred integerp)) *)
+                     (push `(,low . +) range))
+                    (`(integer * ,(and high (pred integerp)))
+                     (push `(- . ,high) range))
+                    (`(integer ,(and low (pred integerp))
+                               ,(and high (pred integerp)))
+                     (push `(,low . ,high) range))
+                    (`(float ,(pred star-or-num) ,(pred star-or-num))
+                     ;; No float range support :/
+                     (push 'float typeset))
+                    (`(function ,args ,ret-type-spec)
+                     (cl-return-from
+                         comp-type-spec-to-constraint
+                       (make-comp-constraint-f
+                        :args (mapcar #'comp-type-spec-to-constraint args)
+                        :ret (comp-type-spec-to-constraint ret-type-spec))))
+                    (_ (error "Unsopported type specifier")))))
+      (if (or (atom type-specifier)
+              (memq (car type-specifier) '(member integer float function)))
+          (destructure-push type-specifier)
+        (if (eq (car type-specifier) 'or)
+            (mapc #'destructure-push (cdr type-specifier))
+          (error "Unsopported type specifier")))
+      (make-comp-constraint :typeset typeset
+                      :valset valset
+                      :range range))))
+
+(defconst comp-known-constraints-h
+  (let ((h (make-hash-table :test #'eq)))
+    (cl-loop
+     for (f type-spec) in comp-known-type-specifiers
+     for constr = (comp-type-spec-to-constraint type-spec)
+     do (puthash f constr h))
+    h)
+  "Hash table function -> `comp-constraint'")
+
+(defun comp-constraint-to-type-spec (mvar)
+  "Given MVAR return its type specifier."
+  (let ((valset (comp-mvar-valset mvar))
+        (typeset (comp-mvar-typeset mvar))
+        (range (comp-mvar-range mvar)))
+
+    (when valset
+      (when (memq nil valset)
+        (if (memq t valset)
+            (progn
+              ;; t and nil are values, convert into `boolean'.
+              (push 'boolean typeset)
+              (setf valset (remove t (remove nil valset))))
+          ;; Only nil is a value, convert it into a `null' type specifier.
+          (setf valset (remove nil valset))
+          (push 'null typeset))))
+
+    ;; Form proper integer type specifiers.
+    (setf range (cl-loop for (l . h) in range
+                             for low = (if (integerp l) l '*)
+                             for high = (if (integerp h) h '*)
+                             collect `(integer ,low , high))
+          valset (cl-remove-duplicates valset))
+
+    ;; Form the final type specifier.
+    (let ((res (append typeset
+                       (when valset
+                         `((member ,@valset)))
+                       range)))
+      (if (> (length res) 1)
+          `(or ,@res)
+        (if (memq (car-safe res) '(member integer))
+            res
+          (car res))))))
+
 (defun comp-set-op-p (op)
   "Assignment predicate for OP."
   (when (memq op comp-limple-sets) t))
@@ -548,14 +722,6 @@ To be used by all entry points."
 (defun comp-type-hint-p (func)
   "Type-hint predicate for function name FUNC."
   (when (memq func comp-type-hints) t))
-
-(defun comp-func-ret-typeset (func)
-  "Return the typeset returned by function FUNC. "
-  (or (alist-get func comp-known-ret-types) '(t)))
-
-(defsubst comp-func-ret-range (func)
-  "Return the range returned by function FUNC. "
-  (alist-get func comp-known-ret-ranges))
 
 (defun comp-func-unique-in-cu-p (func)
   "Return t if FUNC is known to be unique in the current compilation unit."
@@ -613,7 +779,7 @@ Assume allocation class 'd-default as default."
   "Syntax-highlight LIMPLE IR."
   (setf font-lock-defaults '(comp-limple-lock-keywords)))
 
-(cl-defun comp-log (data &optional (level 1))
+(cl-defun comp-log (data &optional (level 1) quoted)
   "Log DATA at LEVEL.
 LEVEL is a number from 1-3; if it is less than `comp-verbose', do
 nothing.  If `noninteractive', log with `message'.  Otherwise,
@@ -624,15 +790,16 @@ log with `comp-log-to-buffer'."
           (atom (message "%s" data))
           (t (dolist (elem data)
                (message "%s" elem))))
-      (comp-log-to-buffer data))))
+      (comp-log-to-buffer data quoted))))
 
-(cl-defun comp-log-to-buffer (data)
+(cl-defun comp-log-to-buffer (data &optional quoted)
   "Log DATA to `comp-log-buffer-name'."
-  (let* ((log-buffer
-          (or (get-buffer comp-log-buffer-name)
-              (with-current-buffer (get-buffer-create comp-log-buffer-name)
-                (setf buffer-read-only t)
-                (current-buffer))))
+  (let* ((print-f (if quoted #'prin1 #'princ))
+         (log-buffer
+             (or (get-buffer comp-log-buffer-name)
+                 (with-current-buffer (get-buffer-create comp-log-buffer-name)
+                   (setf buffer-read-only t)
+                   (current-buffer))))
          (log-window (get-buffer-window log-buffer))
          (inhibit-read-only t)
          at-end-p)
@@ -644,9 +811,9 @@ log with `comp-log-to-buffer'."
       (save-excursion
         (goto-char (point-max))
         (cl-typecase data
-          (atom (princ data log-buffer))
+          (atom (funcall print-f data log-buffer))
           (t (dolist (elem data)
-               (princ elem log-buffer)
+               (funcall print-f elem log-buffer)
                (insert "\n"))))
         (insert "\n"))
       (when (and at-end-p log-window)
@@ -662,7 +829,7 @@ VERBOSITY is a number between 0 and 3."
     (cl-loop for block-name being each hash-keys of (comp-func-blocks func)
              using (hash-value bb)
              do (comp-log (concat "<" (symbol-name block-name) ">") verbosity)
-                (comp-log (comp-block-insns bb) verbosity))))
+                (comp-log (comp-block-insns bb) verbosity t))))
 
 (defun comp-log-edges (func)
   "Log edges in FUNC."
@@ -795,7 +962,7 @@ clashes."
                   (gethash (aref (comp-func-byte-func func) 1)
                            byte-to-native-lambdas-h))))
         (cl-assert lap)
-        (comp-log lap 2)
+        (comp-log lap 2 t)
         (let ((arg-list (aref (comp-func-byte-func func) 0)))
           (setf (comp-func-l-args func)
                 (comp-decrypt-arg-list arg-list function-name)
@@ -833,7 +1000,7 @@ clashes."
                 (gethash (aref byte-code 1)
                          byte-to-native-lambdas-h))))
       (cl-assert lap)
-      (comp-log lap 2)
+      (comp-log lap 2 t)
       (if (comp-func-l-p func)
           (setf (comp-func-l-args func)
                 (comp-decrypt-arg-list (aref byte-code 0) byte-code))
@@ -887,7 +1054,7 @@ clashes."
       (puthash 0 (comp-func-frame-size func) (comp-func-array-h func))
       (comp-add-func-to-ctxt func)
       (comp-log (format "Function %s:\n" name) 1)
-      (comp-log lap 1))))
+      (comp-log lap 1 t))))
 
 (cl-defmethod comp-spill-lap-function ((filename string))
   "Byte-compile FILENAME spilling data from the byte compiler."
@@ -2421,7 +2588,8 @@ Forward propagate immediate involed in assignments."
        (cl-every #'comp-mvar-value-vld-p args)))
 
 (defun comp-function-call-maybe-fold (insn f args)
-  "Given INSN when F is pure if all ARGS are known remove the function call."
+  "Given INSN when F is pure if all ARGS are known remove the function call.
+Return non-nil if the function is folded successfully."
   (cl-flet ((rewrite-insn-as-setimm (insn value)
                ;; See `comp-emit-setimm'.
                (comp-add-const-to-relocs value)
@@ -2488,26 +2656,27 @@ Return LVAL."
                    (mapcar #'comp-mvar-range rhs-mvars))))
     lval))
 
+(defun comp-fwprop-call (insn lval f args)
+  "Propagate on a call INSN into LVAL.
+F is the function being called with arguments ARGS.
+Fold the call in case."
+  (unless (comp-function-call-maybe-fold insn f args)
+    (when-let ((constr (gethash f comp-known-constraints-h)))
+      (let ((constr (comp-constraint-f-ret constr)))
+        (setf (comp-mvar-range lval) (comp-constraint-range constr)
+              (comp-mvar-valset lval) (comp-constraint-valset constr)
+              (comp-mvar-typeset lval) (comp-constraint-typeset constr))))))
+
 (defun comp-fwprop-insn (insn)
   "Propagate within INSN."
   (pcase insn
     (`(set ,lval ,rval)
      (pcase rval
        (`(,(or 'call 'callref) ,f . ,args)
-        (if-let ((range (comp-func-ret-range f)))
-            (setf (comp-mvar-range lval) (list range)
-                  (comp-mvar-typeset lval) nil)
-          (setf (comp-mvar-typeset lval)
-                (comp-func-ret-typeset f)))
-        (comp-function-call-maybe-fold insn f args))
+        (comp-fwprop-call insn lval f args))
        (`(,(or 'direct-call 'direct-callref) ,f . ,args)
         (let ((f (comp-func-name (gethash f (comp-ctxt-funcs-h comp-ctxt)))))
-          (if-let ((range (comp-func-ret-range f)))
-              (setf (comp-mvar-range lval) (list range)
-                    (comp-mvar-typeset lval) nil)
-            (setf (comp-mvar-typeset lval)
-                  (comp-func-ret-typeset f)))
-          (comp-function-call-maybe-fold insn f args)))
+          (comp-fwprop-call insn lval f args)))
        (_
         (comp-mvar-propagate lval rval))))
     (`(assume ,lval ,rval ,kind)
@@ -2812,34 +2981,9 @@ Set it into the `ret-type-specifier' slot."
                                do (pcase insn
                                     (`(return ,mvar)
                                      (push `(,mvar . nil) res))))
-                           finally (cl-return res))))
-         (res-valset (comp-mvar-valset res-mvar))
-         (res-typeset (comp-mvar-typeset res-mvar))
-         (res-range (comp-mvar-range res-mvar)))
-    ;; If nil is a value convert it into a `null' type specifier.
-    (when res-valset
-      (when (memq nil res-valset)
-        (setf res-valset (remove nil res-valset))
-        (push 'null res-typeset)))
-
-    ;; Form proper integer type specifiers.
-    (setf res-range (cl-loop for (l . h) in res-range
-                             for low = (if (integerp l) l '*)
-                             for high = (if (integerp h) h '*)
-                             collect `(integer ,low , high))
-          res-valset (cl-remove-duplicates res-valset))
-
-    ;; Form the final type specifier.
-    (let ((res (append res-typeset
-                       (when res-valset
-                         `((member ,@res-valset)))
-                       res-range)))
-      (setf (comp-func-ret-type-specifier func)
-            (if (> (length res) 1)
-                `(or ,@res)
-              (if (memq (car-safe res) '(member integer))
-                  res
-                (car res)))))))
+                           finally (cl-return res)))))
+    (setf (comp-func-ret-type-specifier func)
+          (comp-constraint-to-type-spec res-mvar))))
 
 (defun comp-finalize-container (cont)
   "Finalize data container CONT."
