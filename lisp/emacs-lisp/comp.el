@@ -23,6 +23,7 @@
 ;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
+
 ;; This code is an attempt to make the pig fly.
 ;; Or, to put it another way to make a 911 out of a turbocharged VW Bug.
 
@@ -73,27 +74,23 @@ This intended for debugging the compiler itself.
 - 1 final limple is logged.
 - 2 LAP and final limple and some pass info are logged.
 - 3 max verbosity."
-  :type 'number
-  :group 'comp)
+  :type 'number)
 
 (defcustom comp-always-compile nil
   "Unconditionally (re-)compile all files."
-  :type 'boolean
-  :group 'comp)
+  :type 'boolean)
 
 (defcustom comp-deferred-compilation-black-list
   '()
   "List of regexps to exclude files from deferred native compilation.
 Skip if any is matching."
-  :type 'list
-  :group 'comp)
+  :type 'list)
 
 (defcustom comp-bootstrap-black-list
   '()
   "List of regexps to exclude files from native compilation during bootstrap.
 Skip if any is matching."
-  :type 'list
-  :group 'comp)
+  :type 'list)
 
 (defcustom comp-never-optimize-functions
   '(;; The following two are mandatory for Emacs to be working
@@ -101,39 +98,33 @@ Skip if any is matching."
     ;; REMOVE.
     macroexpand rename-buffer)
   "Primitive functions for which we do not perform trampoline optimization."
-  :type 'list
-  :group 'comp)
+  :type 'list)
 
 (defcustom comp-async-jobs-number 0
   "Default number of processes used for async compilation.
 When zero use half of the CPUs or at least one."
-  :type 'number
-  :group 'comp)
+  :type 'number)
 
+;; FIXME: This an abnormal hook, and should be renamed to something
+;; like `comp-async-cu-done-function'.
 (defcustom comp-async-cu-done-hook nil
-  "This hook is run whenever an asyncronous native compilation
-finishes compiling a single compilation unit.
+  "Hook run after asynchronously compiling a single compilation unit.
 The argument FILE passed to the function is the filename used as
 compilation input."
-  :type 'hook
-  :group 'comp)
+  :type 'hook)
 
 (defcustom comp-async-all-done-hook nil
-  "This hook is run whenever the asyncronous native compilation
-finishes compiling all input files."
-  :type 'hook
-  :group 'comp)
+  "Hook run after asynchronously compiling all input files."
+  :type 'hook)
 
 (defcustom comp-async-env-modifier-form nil
-  "Form to be evaluated by each asyncronous compilation worker
-before compilation.  Usable to modify the compiler environment."
-  :type 'list
-  :group 'comp)
+  "Form evaluated before compilation by each asyncronous compilation worker.
+Usable to modify the compiler environment."
+  :type 'list)
 
 (defcustom comp-async-report-warnings-errors t
   "Report warnings and errors from native asynchronous compilation."
-  :type 'boolean
-  :group 'comp)
+  :type 'boolean)
 
 (defcustom comp-native-driver-options nil
   "Options passed verbatim to the native compiler's backend driver.
@@ -142,11 +133,10 @@ affecting the assembler and linker are likely to be useful.
 
 Passing these options is only available in libgccjit version 9
 and above."
-  :type 'list
-  :group 'comp)
+  :type 'list)
 
 (defvar comp-dry-run nil
-  "When non-nil run everything but the C back-end.")
+  "If non-nil, run everything but the C back-end.")
 
 (defconst comp-valid-source-re (rx ".el" (? ".gz") eos)
   "Regexp to match filename of valid input source files.")
@@ -571,9 +561,10 @@ Integer values are handled in the `range' slot.")
                   (> high most-positive-fixnum))
         t))))
 
-(defsubst comp-mvar-symbol-p (mvar)
+(defun comp-mvar-symbol-p (mvar)
   "Return t if MVAR is certainly a symbol."
-  (equal (comp-mvar-typeset mvar) '(symbol)))
+  (or (equal (comp-mvar-typeset mvar) '(symbol))
+      (cl-every #'symbolp (comp-mvar-valset mvar))))
 
 (defsubst comp-mvar-cons-p (mvar)
   "Return t if MVAR is certainly a cons."
@@ -593,7 +584,7 @@ In use by the backend."
 
 (defun comp-ensure-native-compiler ()
   "Make sure Emacs has native compiler support and libgccjit is loadable.
-Raise an error otherwise.
+Signal an error otherwise.
 To be used by all entry points."
   (cond
    ((null (featurep 'nativecomp))
@@ -773,7 +764,7 @@ Assume allocation class 'd-default as default."
     (,(rx-to-string
        `(seq "(" (group-n 1 (or ,@(mapcar #'symbol-name comp-limple-ops)))))
      (1 font-lock-keyword-face)))
-  "Highlights used by comp-limple-mode.")
+  "Highlights used by `comp-limple-mode'.")
 
 (define-derived-mode comp-limple-mode fundamental-mode "LIMPLE"
   "Syntax-highlight LIMPLE IR."
@@ -1259,8 +1250,7 @@ If DST-N is specified use it otherwise assume it to be the current slot."
 (defun comp-make-curr-block (block-name entry-sp &optional addr)
   "Create a basic block with BLOCK-NAME and set it as current block.
 ENTRY-SP is the sp value when entering.
-The block is added to the current function.
-The block is returned."
+Add block to the current function and return it."
   (let ((bb (make--comp-block-lap addr entry-sp block-name)))
     (setf (comp-limplify-curr-block comp-pass) bb
           (comp-limplify-pc comp-pass) addr
@@ -1999,12 +1989,20 @@ Return the corresponding rhs slot number."
                      ,(and (or 'eq 'eql '= 'equal) test-fn) ,op1 ,op2))
 	       (comment ,_comment-str)
 	       (cond-jump ,cond ,(pred comp-mvar-p) ,bb-1 ,_bb-2))
-             (when-let ((target-slot1 (comp-cond-rw-target-slot
-                                      (comp-mvar-slot op1) (car insns-seq) b)))
-	       (comp-emit-assume target-slot1 op2 bb-1 test-fn))
-             (when-let ((target-slot2 (comp-cond-rw-target-slot
-                                      (comp-mvar-slot op2) (car insns-seq) b)))
-	       (comp-emit-assume target-slot2 op1 bb-1 test-fn))
+             ;; FIXME We guard the target block against having more
+             ;; then one predecessor.  The right fix will be to add a
+             ;; new dedicated basic block for the assumptions so we
+             ;; can proceed always.
+             (when (= (length (comp-block-in-edges
+                                 (gethash bb-1
+                                          (comp-func-blocks comp-func))))
+                      1)
+               (when-let ((target-slot1 (comp-cond-rw-target-slot
+                                         (comp-mvar-slot op1) (car insns-seq) b)))
+                 (comp-emit-assume target-slot1 op2 bb-1 test-fn))
+               (when-let ((target-slot2 (comp-cond-rw-target-slot
+                                         (comp-mvar-slot op2) (car insns-seq) b)))
+                 (comp-emit-assume target-slot2 op1 bb-1 test-fn)))
 	     (cl-return-from in-the-basic-block))))))
 
 (defun comp-cond-rw (_)
