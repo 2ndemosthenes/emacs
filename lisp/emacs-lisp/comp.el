@@ -118,7 +118,7 @@ compilation input."
   :type 'hook)
 
 (defcustom comp-async-env-modifier-form nil
-  "Form evaluated before compilation by each asyncronous compilation worker.
+  "Form evaluated before compilation by each asynchronous compilation worker.
 Usable to modify the compiler environment."
   :type 'list)
 
@@ -352,7 +352,7 @@ Needed to replace immediate byte-compiled lambdas with the compiled reference.")
              :documentation "Standard data relocated in use by functions.")
   (d-impure (make-comp-data-container) :type comp-data-container
             :documentation "Relocated data that cannot be moved into pure space.
-This is tipically for top-level forms other than defun.")
+This is typically for top-level forms other than defun.")
   (d-ephemeral (make-comp-data-container) :type comp-data-container
                :documentation "Relocated data not necessary after load.")
   (with-late-load nil :type boolean
@@ -389,7 +389,7 @@ To be used when ncall-conv is nil."))
          :documentation "List of instructions.")
   (closed nil :type boolean
           :documentation "t if closed.")
-  ;; All the followings are for SSA and CGF analysis.
+  ;; All the following are for SSA and CGF analysis.
   ;; Keep in sync with `comp-clean-ssa'!!
   (in-edges () :type list
             :documentation "List of incoming edges.")
@@ -461,7 +461,7 @@ CFG is mutated by a pass.")
   (blocks (make-hash-table) :type hash-table
           :documentation "Basic block name -> basic block.")
   (lap-block (make-hash-table :test #'equal) :type hash-table
-             :documentation "LAP lable -> LIMPLE basic block name.")
+             :documentation "LAP label -> LIMPLE basic block name.")
   (edges-h (make-hash-table) :type hash-table
          :documentation "Hash edge-num -> edge connecting basic two blocks.")
   (block-cnt-gen (funcall #'comp-gen-counter) :type function
@@ -749,7 +749,7 @@ Assume allocation class 'd-default as default."
                                            comp-curr-allocation-class))))
 
 
-;;; Log rountines.
+;;; Log routines.
 
 (defconst comp-limple-lock-keywords
   `((,(rx bol "(comment" (1+ not-newline)) . font-lock-comment-face)
@@ -873,7 +873,7 @@ instruction."
 Add PREFIX in front of it.  If FIRST is not nil, pick the first
 available name ignoring compilation context and potential name
 clashes."
-  ;; Unfortunatelly not all symbol names are valid as C function names...
+  ;; Unfortunately not all symbol names are valid as C function names...
   ;; Nassi's algorithm here:
   (let* ((orig-name (if (symbolp name) (symbol-name name) name))
          (crypted (cl-loop with str = (make-string (* 2 (length orig-name)) 0)
@@ -2008,7 +2008,7 @@ Return the corresponding rhs slot number."
 (defun comp-cond-rw (_)
   "Rewrite conditional branches adding appropriate 'assume' insns.
 This is introducing and placing 'assume' insns in use by fwprop
-to propagate conditional branch test informations on target basic
+to propagate conditional branch test information on target basic
 blocks."
   (maphash (lambda (_ f)
              (when (and (>= (comp-func-speed f) 1)
@@ -2051,7 +2051,7 @@ blocks."
                              f))))
 
 (defun comp-pure-infer-func (f)
-  "If all funtions called by F are pure then F is pure too."
+  "If all functions called by F are pure then F is pure too."
   (when (and (cl-every (lambda (x)
                          (or (comp-function-pure-p x)
                              (eq x (comp-func-name f))))
@@ -2094,7 +2094,7 @@ blocks."
     mvar))
 
 (defun comp-clean-ssa (f)
-  "Clean-up SSA for funtion F."
+  "Clean-up SSA for function F."
   (setf (comp-func-edges-h f) (make-hash-table))
   (cl-loop
    for b being each hash-value of (comp-func-blocks f)
@@ -2367,7 +2367,7 @@ PRE-LAMBDA and POST-LAMBDA are called in pre or post-order if non-nil."
                            do (finalize-phi args b)))))
 
 (defun comp-ssa ()
-  "Port all functions into mininal SSA form."
+  "Port all functions into minimal SSA form."
   (maphash (lambda (_ f)
              (let* ((comp-func f)
                     (ssa-status (comp-func-ssa-status f)))
@@ -3139,7 +3139,7 @@ Prepare every function for final compilation and drive the C back-end."
   x)
 
 
-;; Primitive funciton advice machinery
+;; Primitive function advice machinery
 
 (defun comp-trampoline-filename (subr-name)
   "Given SUBR-NAME return the filename containing the trampoline."
@@ -3445,7 +3445,7 @@ load once finished compiling."
 ;;;###autoload
 (defun native-compile (function-or-file &optional output)
   "Compile FUNCTION-OR-FILE into native code.
-This is the syncronous entry-point for the Emacs Lisp native
+This is the synchronous entry-point for the Emacs Lisp native
 compiler.
 FUNCTION-OR-FILE is a function symbol, a form or the filename of
 an Emacs Lisp source file.
@@ -3485,17 +3485,31 @@ environment variable 'NATIVE_DISABLED' is set byte compile only."
         (`(,tempfile . ,target-file)
          (rename-file tempfile target-file t))))))
 
-;;;###autoload
-(defun native-compile-async (paths &optional recursively load)
+(defun native--compile-async (paths &optional recursively load)
   "Compile PATHS asynchronously.
 PATHS is one path or a list of paths to files or directories.
-`comp-async-jobs-number' specifies the number of (commands) to
-run simultaneously.  If RECURSIVELY, recurse into subdirectories
-of given directories.
-LOAD can be nil t or 'late."
+
+If optional argument RECURSIVELY is non-nil, recurse into
+subdirectories of given directories.
+
+If optional argument LOAD is non-nil, request to load the file
+after compiling.
+
+The variable `comp-async-jobs-number' specifies the number
+of (commands) to run simultaneously.
+
+LOAD can also be the symbol `late'.  This is used internally if
+the byte code has already been loaded when this function is
+called.  It means that we requests the special kind of load,
+necessary in that situation, called \"late\" loading.
+
+During a \"late\" load instead of executing all top level forms
+of the original files, only function definitions are
+loaded (paying attention to have these effective only if the
+bytecode definition was not changed in the meanwhile)."
   (comp-ensure-native-compiler)
   (unless (member load '(nil t late))
-    (error "LOAD must be nil t or 'late"))
+    (error "LOAD must be nil, t or 'late"))
   (unless (listp paths)
     (setf paths (list paths)))
   (let (files)
@@ -3511,14 +3525,12 @@ LOAD can be nil t or 'late."
                        (list "Path not a file nor directory" path)))))
     (dolist (file files)
       (if-let ((entry (cl-find file comp-files-queue :key #'car :test #'string=)))
-          ;; When no load is specified (plain async compilation) we
-          ;; consider valid the one previously queued, otherwise we
-          ;; check for coherence (bug#40602).
-          (cl-assert (or (null load)
-                         (eq load (cdr entry)))
-                     nil "Trying to queue %s with LOAD %s but this is already \
-queued with LOAD %"
-                     file load (cdr entry))
+          ;; Most likely the byte-compiler has requested a deferred
+          ;; compilation, so update `comp-files-queue' to reflect that.
+          (unless (or (null load)
+                      (eq load (cdr entry)))
+            (cl-substitute (cons file load) (car entry) comp-files-queue
+                           :key #'car :test #'string=))
         ;; Make sure we are not already compiling `file' (bug#40838).
         (unless (or (gethash file comp-async-compilations)
                     ;; Also exclude files from deferred compilation if
@@ -3539,6 +3551,23 @@ queued with LOAD %"
                                        out-filename)))))))
     (when (zerop (comp-async-runnings))
       (comp-run-async-workers))))
+
+;;;###autoload
+(defun native-compile-async (paths &optional recursively load)
+  "Compile PATHS asynchronously.
+PATHS is one path or a list of paths to files or directories.
+
+If optional argument RECURSIVELY is non-nil, recurse into
+subdirectories of given directories.
+
+If optional argument LOAD is non-nil, request to load the file
+after compiling.
+
+The variable `comp-async-jobs-number' specifies the number
+of (commands) to run simultaneously."
+  ;; Normalize: we only want to pass t or nil, never e.g. `late'.
+  (let ((load (not (not load))))
+    (native--compile-async paths recursively load)))
 
 (provide 'comp)
 
