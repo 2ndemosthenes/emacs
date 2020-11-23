@@ -80,13 +80,13 @@ This intended for debugging the compiler itself.
   "Unconditionally (re-)compile all files."
   :type 'boolean)
 
-(defcustom comp-deferred-compilation-black-list
+(defcustom comp-deferred-compilation-deny-list
   '()
   "List of regexps to exclude files from deferred native compilation.
 Skip if any is matching."
   :type 'list)
 
-(defcustom comp-bootstrap-black-list
+(defcustom comp-bootstrap-deny-list
   '()
   "List of regexps to exclude files from native compilation during bootstrap.
 Skip if any is matching."
@@ -3439,53 +3439,26 @@ load once finished compiling."
       ;; So we return the compiled function.
       (native-elisp-load data))))
 
-
-;;; Compiler entry points.
+(defun native-compile-async-skip-p (file load selector)
+  "Return non-nil when FILE compilation should be skipped.
 
-;;;###autoload
-(defun native-compile (function-or-file &optional output)
-  "Compile FUNCTION-OR-FILE into native code.
-This is the synchronous entry-point for the Emacs Lisp native
-compiler.
-FUNCTION-OR-FILE is a function symbol, a form or the filename of
-an Emacs Lisp source file.
-When OUTPUT is non-nil use it as filename for the compiled
-object.
-If FUNCTION-OR-FILE is a filename return the filename of the
-compiled object.  If FUNCTION-OR-FILE is a function symbol or a
-form return the compiled function."
-  (comp--native-compile function-or-file nil output))
+LOAD and SELECTOR work as described in `native--compile-async'."
+  ;; Make sure we are not already compiling `file' (bug#40838).
+  (or (gethash file comp-async-compilations)
+      (cond
+       ((null selector) nil)
+       ((functionp selector) (not (funcall selector file)))
+       ((stringp selector) (not (string-match-p selector file)))
+       (t (error "SELECTOR must be a function a regexp or nil")))
+      ;; Also exclude files from deferred compilation if
+      ;; any of the regexps in
+      ;; `comp-deferred-compilation-deny-list' matches.
+      (and (eq load 'late)
+           (cl-some (lambda (re)
+                      (string-match-p re file))
+                    comp-deferred-compilation-deny-list))))
 
-;;;###autoload
-(defun batch-native-compile ()
-  "Run `native-compile' on remaining command-line arguments.
-Ultra cheap impersonation of `batch-byte-compile'."
-  (comp-ensure-native-compiler)
-  (cl-loop for file in command-line-args-left
-           if (or (null byte-native-for-bootstrap)
-                  (cl-notany (lambda (re) (string-match re file))
-                             comp-bootstrap-black-list))
-           do (comp--native-compile file)
-           else
-           do (byte-compile-file file)))
-
-;;;###autoload
-(defun batch-byte-native-compile-for-bootstrap ()
-  "As `batch-byte-compile' but used for booststrap.
-Generate .elc files in addition to the .eln one.  If the
-environment variable 'NATIVE_DISABLED' is set byte compile only."
-  (comp-ensure-native-compiler)
-  (if (equal (getenv "NATIVE_DISABLED") "1")
-      (batch-byte-compile)
-    (cl-assert (= 1 (length command-line-args-left)))
-    (let ((byte-native-for-bootstrap t)
-          (byte-to-native-output-file nil))
-      (batch-native-compile)
-      (pcase byte-to-native-output-file
-        (`(,tempfile . ,target-file)
-         (rename-file tempfile target-file t))))))
-
-(defun native--compile-async (paths &optional recursively load)
+(defun native--compile-async (paths &optional recursively load selector)
   "Compile PATHS asynchronously.
 PATHS is one path or a list of paths to files or directories.
 
@@ -3494,6 +3467,12 @@ subdirectories of given directories.
 
 If optional argument LOAD is non-nil, request to load the file
 after compiling.
+
+The optional argument SELECTOR has the following valid values:
+
+nil -- Select all files.
+a string -- A regular expression selecting files with matching names.
+a function -- A function selecting files with matching names.
 
 The variable `comp-async-jobs-number' specifies the number
 of (commands) to run simultaneously.
@@ -3531,14 +3510,8 @@ bytecode definition was not changed in the meanwhile)."
                       (eq load (cdr entry)))
             (cl-substitute (cons file load) (car entry) comp-files-queue
                            :key #'car :test #'string=))
-        ;; Make sure we are not already compiling `file' (bug#40838).
-        (unless (or (gethash file comp-async-compilations)
-                    ;; Also exclude files from deferred compilation if
-                    ;; any of the regexps in
-                    ;; `comp-deferred-compilation-black-list' matches.
-                    (and (eq load 'late)
-                         (cl-some (lambda (re) (string-match re file))
-                                  comp-deferred-compilation-black-list)))
+
+        (unless (native-compile-async-skip-p file load selector)
           (let* ((out-filename (comp-el-to-eln-filename file))
                  (out-dir (file-name-directory out-filename)))
             (unless (file-exists-p out-dir)
@@ -3552,8 +3525,54 @@ bytecode definition was not changed in the meanwhile)."
     (when (zerop (comp-async-runnings))
       (comp-run-async-workers))))
 
+
+;;; Compiler entry points.
+
 ;;;###autoload
-(defun native-compile-async (paths &optional recursively load)
+(defun native-compile (function-or-file &optional output)
+  "Compile FUNCTION-OR-FILE into native code.
+This is the synchronous entry-point for the Emacs Lisp native
+compiler.
+FUNCTION-OR-FILE is a function symbol, a form or the filename of
+an Emacs Lisp source file.
+When OUTPUT is non-nil use it as filename for the compiled
+object.
+If FUNCTION-OR-FILE is a filename return the filename of the
+compiled object.  If FUNCTION-OR-FILE is a function symbol or a
+form return the compiled function."
+  (comp--native-compile function-or-file nil output))
+
+;;;###autoload
+(defun batch-native-compile ()
+  "Run `native-compile' on remaining command-line arguments.
+Ultra cheap impersonation of `batch-byte-compile'."
+  (comp-ensure-native-compiler)
+  (cl-loop for file in command-line-args-left
+           if (or (null byte-native-for-bootstrap)
+                  (cl-notany (lambda (re) (string-match re file))
+                             comp-bootstrap-deny-list))
+           do (comp--native-compile file)
+           else
+           do (byte-compile-file file)))
+
+;;;###autoload
+(defun batch-byte-native-compile-for-bootstrap ()
+  "As `batch-byte-compile' but used for booststrap.
+Generate .elc files in addition to the .eln one.  If the
+environment variable 'NATIVE_DISABLED' is set byte compile only."
+  (comp-ensure-native-compiler)
+  (if (equal (getenv "NATIVE_DISABLED") "1")
+      (batch-byte-compile)
+    (cl-assert (= 1 (length command-line-args-left)))
+    (let ((byte-native-for-bootstrap t)
+          (byte-to-native-output-file nil))
+      (batch-native-compile)
+      (pcase byte-to-native-output-file
+        (`(,tempfile . ,target-file)
+         (rename-file tempfile target-file t))))))
+
+;;;###autoload
+(defun native-compile-async (paths &optional recursively load selector)
   "Compile PATHS asynchronously.
 PATHS is one path or a list of paths to files or directories.
 
@@ -3563,11 +3582,17 @@ subdirectories of given directories.
 If optional argument LOAD is non-nil, request to load the file
 after compiling.
 
+The optional argument SELECTOR has the following valid values:
+
+nil -- Select all files.
+a string -- A regular expression selecting files with matching names.
+a function -- A function selecting files with matching names.
+
 The variable `comp-async-jobs-number' specifies the number
 of (commands) to run simultaneously."
   ;; Normalize: we only want to pass t or nil, never e.g. `late'.
   (let ((load (not (not load))))
-    (native--compile-async paths recursively load)))
+    (native--compile-async paths recursively load selector)))
 
 (provide 'comp)
 
