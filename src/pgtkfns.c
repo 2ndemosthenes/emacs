@@ -1,6 +1,6 @@
 /* Functions for the pure Gtk+-3.
 
-Copyright (C) 1989, 1992-1994, 2005-2006, 2008-2017 Free Software
+Copyright (C) 1989, 1992-1994, 2005-2006, 2008-2020 Free Software
 Foundation, Inc.
 
 This file is part of GNU Emacs.
@@ -1860,13 +1860,9 @@ parse_resource_key (const char *res_key, char *setting_key)
 
   /* check existence of setting_key */
   GSettingsSchemaSource *ssrc = g_settings_schema_source_get_default ();
-  GSettingsSchema *scm =
-    g_settings_schema_source_lookup (ssrc, SCHEMA_ID, FALSE);
-  if (scm == NULL)
-    {
-      return NULL;
-    }
-
+  GSettingsSchema *scm = g_settings_schema_source_lookup (ssrc, SCHEMA_ID, FALSE);
+  if (!scm)
+    return NULL;	/* *.schema.xml is not installed. */
   if (!g_settings_schema_has_key (scm, setting_key))
     {
       g_settings_schema_unref (scm);
